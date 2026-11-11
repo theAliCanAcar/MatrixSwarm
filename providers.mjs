@@ -10,6 +10,7 @@ export const providerDefinitions = [
       { id: 'apiKey', label: 'API key', placeholder: 'key-…', env: 'ARCHIL_API_KEY' },
       { id: 'region', label: 'Region', placeholder: 'aws-us-east-1', env: 'ARCHIL_REGION', secret: false },
       { id: 'baseSandboxId', label: 'Base sandbox ID (optional)', placeholder: 'Existing Archil sandbox ID', env: 'ARCHIL_BASE_SANDBOX_ID', secret: false },
+      { id: 'additionalSandboxIds', label: 'Additional run sandbox IDs (optional)', placeholder: 'Comma-separated Archil sandbox IDs', env: 'ARCHIL_ADDITIONAL_SANDBOX_IDS', secret: false },
     ],
   },
   {
@@ -141,6 +142,8 @@ export function npmLockfilePackages(lockfileText) {
 }
 
 export function createProviders({ getValues, record, fetcher = globalThis.fetch }) {
+  let previousArchilTemplate;
+
   async function observed(provider, operation, runId, execute) {
     const start = performance.now();
     let result;
@@ -222,10 +225,14 @@ export function createProviders({ getValues, record, fetcher = globalThis.fetch 
 
   return {
     archilRuntime({ config, runId } = {}) {
-      const { apiKey, region, baseSandboxId } = getValues('archil');
+      const { apiKey, region, baseSandboxId, additionalSandboxIds = '' } = getValues('archil');
       const origin = archilOrigins.get(region || 'aws-us-east-1');
+      const templates = [...new Set([baseSandboxId, ...additionalSandboxIds.split(',')]
+        .map(id => id?.trim()).filter(Boolean))];
+      const template = templates[templates.indexOf(previousArchilTemplate) + 1] ?? templates[0];
+      previousArchilTemplate = template;
       return createArchilRuntime({
-        apiKey, region: region || 'aws-us-east-1', baseSandboxId, image: config?.image, runId, record,
+        apiKey, region: region || 'aws-us-east-1', baseSandboxId: template, image: config?.image, runId, record,
         async getUsage(id) {
           const payload = await requestJson(fetcher, `${origin}/api/sandboxes/${encodeURIComponent(id)}/usage`, {
             headers: { Accept: 'application/json', Authorization: `Bearer ${apiKey}` },

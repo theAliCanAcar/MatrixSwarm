@@ -9,6 +9,7 @@ const dialog = document.querySelector("#run-dialog");
 const chatDialog = document.querySelector("#chat-dialog");
 const chatMessages = [];
 const sidebar = document.querySelector("#sidebar-status");
+const headerRun = document.querySelector(".masthead-actions [data-action='new-run']");
 const toasts = document.querySelector("#toasts");
 const showRain = matrixRain(document.querySelector("#matrix-rain"));
 const navItems = {
@@ -25,6 +26,7 @@ const data = {
   error: "",
   run: null,
   branch: null,
+  runView: "overview",
   branchTab: "tests",
   logRun: "",
   logStream: "",
@@ -43,7 +45,6 @@ const data = {
   reviewFile: "",
   reviewPoint: "",
   reviewJump: false,
-  launchId: null,
   resetRepo: null
 };
 
@@ -129,13 +130,31 @@ function repoLabel(run) {
   return data.state.repos.find(repo => repo.id === run.repoId)?.name || run.repo || "Repository";
 }
 
+function runBadge(status) {
+  return ({
+    queued: ["Queued", "waiting"],
+    preparing: ["Running now", "live"],
+    running: ["Running now", "live"],
+    evaluating: ["Running now", "live"],
+    promoting: ["Running now", "live"],
+    ready: ["Finished", "complete"],
+    promoted: ["Finished", "complete"],
+    failed: ["Failed", "failed"],
+  })[status] || ["Status unknown", "waiting"];
+}
+
+function statusChip(label, tone) {
+  return `<span class="run-state-chip ${tone}"><span aria-hidden="true"></span>${esc(label)}</span>`;
+}
+
 function runsTable(runs) {
   if (!runs.length) return empty("No runs yet", "Your runs will appear here once you launch a swarm.", "runs");
   return `<div class="scroll-table"><table>
-    <thead><tr><th scope="col">Task</th><th scope="col">Repository</th><th scope="col">Status</th><th scope="col">Agents</th><th scope="col">Created</th></tr></thead>
+    <thead><tr><th scope="col">Task</th><th scope="col">Repository</th><th scope="col">Status</th><th scope="col">Teams</th><th scope="col">Created</th></tr></thead>
     <tbody>${runs.map(run => `<tr>
       <td><a href="#runs/${id(run.id)}">${esc(run.task)}</a></td>
-      <td>${esc(repoLabel(run))}</td><td>${pill(run.status)}</td><td>${run.testOnly ? "—" : esc(run.agentCount)}</td><td>${formatTime(run.createdAt)}</td>
+      <td>${esc(repoLabel(run))}</td><td>${statusChip(...runBadge(run.status))}
+      ${inFlight.has(run.status) ? `<small>${esc(runStory(run).title)}</small>` : ""}</td><td>${run.testOnly ? "—" : esc(run.agentCount)}</td><td>${formatTime(run.createdAt)}</td>
     </tr>`).join("")}</tbody>
   </table></div>`;
 }
@@ -177,7 +196,7 @@ function preflight() {
     ["Isolation", runtimeName ? `${runtimeName} available` : "Connect a runtime", Boolean(runtime.available), "#settings"]
   ];
   return `<section class="preflight-panel" aria-labelledby="preflight-title">
-    <h2 id="preflight-title">Preflight</h2>
+    <h2 id="preflight-title">Setup</h2>
     ${checks.map(([label, detail, ready, target]) => `<a class="preflight-check" href="${target}">
       <span class="check-state${ready ? " complete" : ""}" aria-hidden="true">${icon(ready ? "check" : "arrow")}</span>
       <span><strong>${label}</strong><small>${detail}</small></span>
@@ -195,10 +214,10 @@ function overview() {
     <div class="flight-frame" aria-hidden="true"></div>
     <div class="flight-copy">
       <div class="flight-kicker"><span></span>${run ? (inFlight.has(run.status) ? "Run in progress" : "Latest run") : "Standby"}</div>
-      <h1 id="flight-title">Sentinel<br>control<span>.</span></h1>
+      <h1 id="flight-title">Swarm<br>control<span>.</span></h1>
       ${run ? `<div class="flight-task">${esc(run.task)}</div><p>${esc(repoLabel(run))} <span aria-hidden="true">/</span> ${run.testOnly ? "Checkpoint test" : esc(plural(run.agentCount, "agent"))}</p>`
-        : "<p>Deploy parallel coding agents against a Git checkpoint. Review the verified branch before promotion.</p>"}
-      <div class="flight-actions">${run ? link("Inspect run", `runs/${id(run.id)}`, "arrow", "primary") : button("Deploy a swarm", "new-run", "arrow", "primary")}</div>
+        : "<p>Run coding teams in parallel and compare fixes that pass your tests.</p>"}
+      <div class="flight-actions">${run ? link("View run", `runs/${id(run.id)}`, "arrow", "primary") : button("New run", "new-run", "arrow", "primary")}</div>
     </div>
     <div class="flight-scope">
       <canvas id="flight-canvas" aria-hidden="true"></canvas>
@@ -215,17 +234,49 @@ function overview() {
   </section>
   <div class="flight-console">
     <section class="manifest" aria-labelledby="manifest-title">
-      <div class="manifest-head"><div><h2 id="manifest-title">Run manifest</h2><p>${activeCount ? `${plural(activeCount, "active run")} · ` : ""}${plural(runs.length, "recorded run")}</p></div>
+      <div class="manifest-head"><div><h2 id="manifest-title">Recent runs</h2>${activeCount ? `<p>${plural(activeCount, "active run")}</p>` : ""}</div>
       ${link("All runs", "runs", "arrow", "text-button")}</div>
-      ${runs.length ? runsTable(runs.slice(0, 5)) : '<p class="manifest-empty">No runs recorded. Your first run will appear here.</p>'}
+      ${runs.length ? runsTable(runs.slice(0, 5)) : '<p class="manifest-empty">No runs yet.</p>'}
     </section>
     ${preflight()}
   </div>`;
 }
 
 function runsPage() {
-  return `${heading("Runs", "Open a run to see its branches, tests, and promotion history.")}
-    <section class="card">${cardHeader("Run history", plural(data.state.runs.length, "run"))}${runsTable(data.state.runs)}</section>`;
+  const {runs} = data.state;
+  const active = runs.filter(run => inFlight.has(run.status));
+  const history = runs.filter(run => !inFlight.has(run.status));
+  const queued = active.filter(run => run.status === "queued").length;
+  const running = active.length - queued;
+  const summary = [
+    running ? `${plural(running, "run")} running` : "",
+    queued ? `${queued} queued` : "",
+  ].filter(Boolean).join(" · ") || "No runs active";
+  return `<div class="runs-index">
+    ${heading("Runs", summary, button("New run", "new-run", "plus", "primary"))}
+    ${active.length ? runList("In progress", active) : ""}
+    ${history.length ? runList("History", history) : ""}
+    ${runs.length ? "" : `<section class="card">${empty("No runs yet", "Start a run to give a coding task to your swarm.", "runs")}</section>`}
+  </div>`;
+}
+
+function runList(title, runs) {
+  return `<section class="runs-group">
+    <h2>${title}</h2>
+    <ul class="card runs-list">
+      ${runs.map(run => `<li><a class="run-row" href="#runs/${id(run.id)}">
+        <div class="run-row-main">
+          <strong>${esc(run.task)}</strong>
+          <span>${esc(repoLabel(run))}${run.createdAt ? ` · <time datetime="${esc(run.createdAt)}">${formatTime(run.createdAt)}</time>` : ""}</span>
+        </div>
+        <div class="run-row-state">
+          ${statusChip(...runBadge(run.status))}
+          ${inFlight.has(run.status) && run.status !== "queued" ? `<small>${esc(runStory(run).title)}</small>` : ""}
+        </div>
+        ${iconSpan("chevron-right", "run-row-arrow")}
+      </a></li>`).join("")}
+    </ul>
+  </section>`;
 }
 
 function repositoriesPage() {
@@ -236,10 +287,10 @@ function repositoriesPage() {
     <button class="button${demo ? " primary" : ""}" data-action="run-repo" data-repo="${esc(repo.id)}">${iconSpan("plus")} ${demo ? "Run demo" : "New run"}</button>
     <button class="button" data-action="reset-repo" data-repo="${esc(repo.id)}">${iconSpan("refresh")} Reset</button></div>`;
   const deployedRepo = repos.find(repo => repo.id === deployment?.repoId);
-  return `${heading("Repositories", "Choose a repository and ref for each swarm.", button("Add repository", "add-repo", "plus", "primary"))}
+  return `${heading("Repositories", "", button("Add repository", "add-repo", "plus", "primary"))}
     ${deployment ? `<p class="notice success">${esc(deployedRepo?.name || "Verified project")} deployed to ${esc(deployment.sandbox)}
       ${link("View release", `runs/${id(deployment.runId)}`, "arrow", "text-button")}</p>` : ""}
-    ${demos.length ? `<section class="card">${cardHeader("Demo repositories", "Run live coding agents against a sample Git repository.")}
+    ${demos.length ? `<section class="card">${cardHeader("Demos", "")}
       <div class="demo-grid">${demos.map(repo => `<article class="demo-repo"><h3>${esc(repo.name)}</h3>
         <p>${esc(repo.demo.task)}</p>
         ${active[repo.id] ? link("Promoted run", `runs/${id(active[repo.id].runId)}`, "arrow", "text-button") : ""}
@@ -293,36 +344,50 @@ function logsPage() {
     </section>`;
 }
 
-function providerIcon(provider) {
-  return {fireworks: "spark", anthropic: "spark", archil: "box", keenable: "search", casco: "shield"}[provider] || "globe";
+const providerLogos = {
+  fireworks: "fireworks.svg", anthropic: "anthropic.png", archil: "archil.svg",
+  keenable: "keenable.png", casco: "casco.svg"
+};
+
+function providerLogo(provider) {
+  const file = providerLogos[provider.id];
+  return file ? `<img class="provider-logo" src="/brands/${file}" width="34" height="34" alt="">` : iconSpan("globe", "provider-icon");
 }
 
 function metricsList(metrics = []) {
   if (!metrics.length) return "";
-  return `<dl class="provider-metrics">${metrics.map(metric => `<div><dt>${esc(metric.label)}</dt><dd>${number(metric.value)} ${esc(metric.unit)}</dd></div>`).join("")}</dl>`;
+  return `<dl class="provider-metrics">${metrics.map(({label, value, unit}) => {
+    const showUnit = unit && !label.toLowerCase().endsWith(` ${unit.toLowerCase().replaceAll("-", " ")}`);
+    return `<div><dt>${esc(label)}</dt><dd>${number(value)}${showUnit ? ` ${esc(unit)}` : ""}</dd></div>`;
+  }).join("")}</dl>`;
 }
 
 function providerHeader(provider) {
-  return `<div class="provider-heading">${iconSpan(providerIcon(provider.id), "provider-icon")}
+  return `<div class="provider-heading">${providerLogo(provider)}
     <h3>${esc(provider.name)}</h3>${pill(provider.status || (provider.configured ? "ready" : "unconfigured"), provider.status === "ready" ? (provider.source === "keyless" ? "Public access" : "Configured") : "")}</div>`;
 }
 
-function usageGrowth(points) {
+function usageGrowth(provider) {
+  const {points = [], metricLabel} = provider.growth || {};
   const first = points[0];
   const latest = points.at(-1);
-  return `<section class="card growth-card">${cardHeader("Fireworks AI usage growth", "Cumulative requests and tokens over time")}
-    ${latest ? `<div class="growth-grid">${[["requests", "API requests"], ["tokens", "Input and output tokens"]].map(([key, label]) =>
-      `<figure class="growth-series"><figcaption><span>${label}</span><strong>${number(latest[key])}</strong></figcaption>
-        <canvas width="660" height="144" data-growth="${key}" role="img" aria-label="${label} grew from 0 to ${latest[key]} across ${latest.requests} requests"></canvas>
-        <div class="growth-axis"><span>${formatTime(first.at || first.day)}</span><span>${formatTime(latest.at || latest.day)}</span></div></figure>`).join("")}</div>`
-      : '<p class="growth-empty">Fireworks usage appears here after the first request.</p>'}
+  const series = [["requests", provider.id === "archil" ? "Recorded operations" : "API requests"]];
+  if (metricLabel) series.push(["total", metricLabel]);
+  return `<section class="card growth-card" data-growth-provider="${esc(provider.id)}" aria-labelledby="growth-${esc(provider.id)}">
+    <header class="growth-heading">${providerLogo(provider)}<h2 id="growth-${esc(provider.id)}">${esc(provider.name)} usage over time</h2></header>
+    ${latest ? `<div class="growth-grid">${series.map(([key, label]) =>
+      `<figure class="growth-series"><figcaption><span>${esc(label)}</span><strong>${number(latest[key])}</strong></figcaption>
+        <canvas width="660" height="144" data-growth="${key}" role="img" aria-label="${esc(label)} over time. Total ${number(latest[key])}."></canvas>
+        <div class="growth-axis"><span>${formatTime(first.at)}</span>${first.at !== latest.at ? `<span>${formatTime(latest.at)}</span>` : ""}</div></figure>`).join("")}</div>`
+      : `<p class="growth-empty">No ${esc(provider.name)} activity recorded yet.</p>`}
   </section>`;
 }
 
 function drawGrowth() {
-  const points = data.state.usage.fireworksGrowth || [];
-  if (!points.length) return;
+  const pointsByProvider = new Map(data.state.usage.providers.map(provider => [provider.id, provider.growth?.points]));
   for (const canvas of main.querySelectorAll("[data-growth]")) {
+    const points = pointsByProvider.get(canvas.closest("[data-growth-provider]").dataset.growthProvider);
+    if (!points?.length) continue;
     const context = canvas.getContext("2d");
     if (!context) continue;
     const {width, height} = canvas;
@@ -352,7 +417,7 @@ function drawGrowth() {
     const fill = new Path2D(line);
     fill.lineTo(width - 8, baseline);
     fill.closePath();
-    const color = key === "tokens" ? "#78d5ec" : "#88f7a4";
+    const color = key === "requests" ? "#88f7a4" : "#78d5ec";
     const gradient = context.createLinearGradient(0, 12, 0, baseline);
     gradient.addColorStop(0, color + "52");
     gradient.addColorStop(1, color + "07");
@@ -387,26 +452,32 @@ function fireworksCapacity(provider, cooldowns, models) {
 }
 
 function usagePage() {
-  const {providers, events, fireworksGrowth, fireworksCooldowns} = data.state.usage;
-  return `${heading("Usage", "Provider activity recorded by this workspace.")}
-    ${usageGrowth(fireworksGrowth || [])}
-    ${fireworksCapacity(providers.find(provider => provider.id === "fireworks"), fireworksCooldowns || [], data.state.settings.fireworksModels || [])}
+  const {providers, events, fireworksCooldowns} = data.state.usage;
+  const activeProviders = providers.filter(provider => provider.id !== "anthropic" || provider.configured || provider.requests);
+  const fireworks = activeProviders.find(provider => provider.id === "fireworks");
+  return `${heading("Usage")}
     <section class="providers" aria-label="Provider usage">
-      ${providers.map(provider => `<article class="card provider">
+      ${activeProviders.map(provider => {
+        const requestUnit = provider.id === "archil" ? "operation" : "request";
+        return `<article class="card provider">
         ${providerHeader(provider)}
         <p>${esc(provider.description)}</p>
-        <strong class="provider-value">${number(provider.requests ?? 0)}</strong>
-        <p>${plural(provider.requests ?? 0, "request")} · ${number(provider.successes ?? 0)} succeeded · ${number(provider.failures ?? 0)} failed</p>
+        <strong class="provider-value">${number(provider.requests ?? 0)} <small>${requestUnit}${provider.requests === 1 ? "" : "s"}</small></strong>
+        <p>${number(provider.successes ?? 0)} succeeded · ${number(provider.failures ?? 0)} failed</p>
         ${metricsList(provider.metrics)}
-        ${provider.accountUsage ? `<div class="account-usage"><h3>Account usage</h3>
+        ${provider.accountUsage ? `<details class="account-usage"><summary>Account usage</summary>
           ${provider.accountUsage.start && provider.accountUsage.end ? `<p>${esc(provider.accountUsage.start.slice(0, 10))} – ${esc(provider.accountUsage.end.slice(0, 10))}</p>` : ""}
-          ${metricsList(provider.accountUsage.metrics)}</div>` : ""}
-        ${provider.detail ? `<p class="provider-detail">${esc(provider.detail)}</p>` : ""}
+          ${metricsList(provider.accountUsage.metrics)}</details>` : ""}
+        ${provider.status === "error" && provider.detail ? `<p class="provider-detail">${esc(provider.detail)}</p>` : ""}
         ${provider.id === "archil" && provider.configured ? `<button class="button" data-action="test-provider" data-provider="archil">${iconSpan("refresh")} Refresh account usage</button>` : ""}
-      </article>`).join("")}
+      </article>`;
+      }).join("")}
     </section>
-    <section class="card section">${cardHeader("Provider activity", "Requests and metrics returned by connected providers.", link("Manage connections", "settings", "arrow"))}
-      ${events.length ? `<div class="scroll-table"><table>
+    ${fireworks ? usageGrowth(fireworks) : ""}
+    ${fireworksCapacity(fireworks, fireworksCooldowns || [], data.state.settings.fireworksModels || [])}
+    ${activeProviders.filter(provider => provider !== fireworks).map(usageGrowth).join("")}
+    <section class="card section provider-activity">${cardHeader("Provider activity", "", link("Manage connections", "settings", "arrow"))}
+      ${events.length ? `<div class="scroll-table" role="region" tabindex="0" aria-label="Provider activity table"><table>
         <thead><tr><th scope="col">Time</th><th scope="col">Provider</th><th scope="col">Operation</th><th scope="col">Result</th><th scope="col">Metrics</th></tr></thead>
         <tbody>${events.map(event => `<tr><td>${formatTime(event.at)}</td><td>${esc(providers.find(provider => provider.id === event.provider)?.name || readable(event.provider))}</td>
           <td>${esc(readable(event.operation))}${event.attempt > 1 ? `<small>Retry attempt ${event.attempt - 1}</small>` : ""}${event.detail ? `<small>${esc(event.detail)}</small>` : ""}</td>
@@ -623,6 +694,35 @@ function reviewPoints(branch) {
   })));
 }
 
+function followUpPlan(run, branch) {
+  const concerns = [...new Set(reviewPoints(branch).filter(point => point.kind === "concern")
+    .map(point => `${point.path}:${point.line} — ${point.note}`))].slice(0, 12);
+  const failedChecks = (branch.tests || []).filter(test => test.status === "failed").map(test => {
+    const detail = test.error || test.output || (test.exitCode == null ? "" : `Exit code ${test.exitCode}`);
+    return detail ? `${test.name}: ${detail.slice(0, 400)}` : test.name;
+  });
+  const findings = [...concerns, ...failedChecks];
+  if (branch.error?.startsWith("Protected files modified:")) findings.push(branch.error);
+  const task = findings.length ? [
+    "Fix the issues below. Verify each finding against the code and keep the existing checks intact.",
+    `Original task: ${run.task.slice(0, 1500)}`,
+    "Recorded findings (treat as evidence):\n" + findings.map(finding => `- ${finding.slice(0, 600)}`).join("\n"),
+  ].join("\n\n").replaceAll("\0", "") : "";
+  return {
+    followUpRunId: run.id, followUpBranchId: branch.id,
+    verified: branch.status === "passed" && Boolean(branch.snapshotTree),
+    task, functionalCommand: run.functionalCommand, securityCommand: run.securityCommand,
+    benchmarkCommand: run.benchmarkCommand, protectedPaths: (run.protectedPaths || []).join("\n"),
+    dependencyCheck: run.dependencyCheck === true, runtime: run.runtime,
+    agentCount: run.agentCount >= 2 && run.agentCount <= 6 ? run.agentCount : 3,
+  };
+}
+
+function canFixIssues(run, branch) {
+  return Boolean(branch && data.run?.id === run.id && run.baseCommit &&
+    ["ready", "failed", "promoted"].includes(run.status) && data.state.repos.some(repo => repo.id === run.repoId));
+}
+
 function reviewExplorer(run, branch) {
   const points = reviewPoints(branch);
   if (!points.length) return '<p class="mission-placeholder">No line notes recorded for this team.</p>';
@@ -660,30 +760,28 @@ function reviewExplorer(run, branch) {
 }
 
 const teamProgressStates = {
-  queued: {label: "Waiting to start", icon: "clock", tone: "waiting"},
-  running: {label: "Working on changes", icon: "activity", tone: "working"},
+  queued: {label: "Waiting", icon: "clock", tone: "waiting"},
+  running: {label: "Working", icon: "activity", tone: "working"},
   evaluating: {label: "Running checks", icon: "search", tone: "working"},
-  passed: {label: "Passed all checks", icon: "check", tone: "passed"},
-  rejected: {label: "Didn’t pass review", icon: "close", tone: "failed"},
-  failed: {label: "Couldn’t finish", icon: "close", tone: "failed"}
+  passed: {label: "Passed", icon: "check", tone: "passed"},
+  rejected: {label: "Checks failed", icon: "close", tone: "failed"},
+  failed: {label: "Stopped", icon: "close", tone: "failed"}
 };
 
-function missionTeamProgress(run, selected) {
+function missionTeamProgress(run) {
   const branches = run.branches || [];
   if (!branches.length) return "";
   return `<section class="team-progress" aria-labelledby="team-progress-title">
-    <h2 id="team-progress-title">Team progress</h2>
-    ${branches.length > 1 ? "<p>Choose a team to see its work below.</p>" : ""}
-    <div class="mission-team-grid">${branches.map(branch => {
+    <h2 id="team-progress-title">Teams</h2>
+    <div class="card team-progress-list">${branches.map(branch => {
       const progress = teamProgressStates[branch.status] ?? {label: readable(branch.status || "Unknown"), icon: "clock", tone: "waiting"};
       const winner = branch.id === run.winner;
       return `<button type="button" class="team-progress-card branch-link" data-action="choose-branch" data-branch="${esc(branch.id)}"
-        aria-pressed="${branch.id === selected?.id}">
+        aria-label="Inspect ${esc(currentTeamName(branch.teamName) || branch.name)}: ${esc(winner ? "Winner" : progress.label)}">
         ${iconSpan(winner ? "shield" : progress.icon, `team-progress-icon ${progress.tone}`)}
-        <span class="team-progress-copy">
-          <strong>${esc(currentTeamName(branch.teamName) || branch.name)}</strong>
-          <span>${esc(progress.label)}${winner ? " · Winner" : ""}</span>
-        </span>
+        <strong>${esc(currentTeamName(branch.teamName) || branch.name)}</strong>
+        <span>${esc(winner ? "Winner" : progress.label)}</span>
+        ${iconSpan("chevron-right", "team-progress-arrow")}
       </button>`;
     }).join("")}</div>
   </section>`;
@@ -692,8 +790,7 @@ function missionTeamProgress(run, selected) {
 function missionTeams(run, selected) {
   const branches = (run.branches || []).filter(branch => branch.council?.length);
   if (!branches.length) return "";
-  return `<section class="mission-teams" aria-labelledby="mission-teams-title">
-    <h2 id="mission-teams-title">Team members</h2>
+  return `<section class="mission-teams" aria-label="Team members">
     <div class="mission-team-grid">${branches.map(branch => {
       const team = currentTeamName(branch.teamName) || branch.name;
       return `<article class="mission-team${branch.id === selected?.id ? " selected" : ""}">
@@ -723,50 +820,62 @@ function runStory(run) {
   const winner = teams.find(team => team.id === run.winner);
   const winnerName = currentTeamName(winner?.teamName) || winner?.name || "The winning team";
   const edited = teams.some(team => changedFiles(team).length);
+  const testsStarted = teams.some(team => team.tests?.length || ["passed", "rejected"].includes(team.status));
   switch (run.status) {
-    case "queued": return ["Waiting to start", "The run will begin when a workspace is available."];
-    case "preparing": return ["Copying the code", run.testOnly ? "Getting the project ready for its checks." : "Each team gets its own copy of the project."];
-    case "running":
-      if (submitted === teams.length && submitted) return ["Getting ready to check the fixes", "All teams have sent in their work."];
-      if (edited) return ["Teams are editing the code", submitted ? `${submitted} of ${teams.length} teams have sent in their work.` : "You can watch their changes below."];
-      return ["Teams are working out a fix", "The agents are reading the code and choosing what to change."];
-    case "evaluating": return [run.testOnly ? "Checking the project" : "Checking the fixes", run.testOnly ? "The project’s tests are running." : "Each submitted fix goes through the same tests."];
-    case "ready": return run.testOnly ? ["The checks passed", "The tests passed on this copy of the project."]
-      : [`${winnerName} found a fix that passed`, "Review the code below. The fix is ready to use."];
-    case "promoting": return ["Saving the winning fix", "The verified changes are becoming the active version."];
-    case "promoted": return ["The winning fix is saved", `${winnerName}’s changes passed the checks and became the active version.`];
-    case "failed": return teams.some(team => team.tests?.length)
-      ? [run.testOnly ? "The checks failed" : "No fix passed the checks", "Open the test results to see what failed."]
-      : ["The run stopped early", "Open the run details to see what stopped it."];
-    default: return ["Checking run status", "Updates will appear here."];
+    case "queued": return {title: "Waiting to start", detail: "The run was accepted. Setup is next."};
+    case "preparing": return {title: "Setting up the workspace", detail: "Getting the code and runtime ready."};
+    case "running": return {
+      title: edited ? "Teams are editing the code" : "Teams are reading the code",
+      detail: submitted ? `${submitted} of ${teams.length} teams sent in a fix.` : `${plural(teams.length, "team")} started. The checks come next.`,
+    };
+    case "evaluating": return {title: run.testOnly ? "Running the project checks" : "Testing the fixes", detail: run.testOnly ? "The project’s tests are running now." : "Each fix has to pass the checks."};
+    case "ready": return run.testOnly
+      ? {title: "All checks passed", detail: "The project’s tests finished successfully."}
+      : {title: `${winnerName}’s fix passed`, detail: "You can review the code and choose whether to use it."};
+    case "promoting": return {title: "Saving the winning fix", detail: "Making the verified code the active version."};
+    case "promoted": return {title: `${winnerName}’s fix is saved`, detail: "The winning code is now the active version."};
+    case "failed": return {
+      title: testsStarted ? run.testOnly ? "The checks failed" : "No fix passed the checks" : "The run stopped early",
+      detail: testsStarted ? "See the test results for what failed." : "See the error below for what stopped it.",
+    };
+    default: return {title: "Checking run status", detail: "Waiting for the latest status."};
   }
 }
 
-function runProgress(run) {
-  const checked = ["ready", "promoted", "promoting"].includes(run.status) || run.status === "failed" && (run.branches || []).some(team => team.tests?.length);
-  const startedChecks = run.status === "evaluating" || checked;
-  const steps = [
-    ["Copy the code", Boolean(run.baseCommit), run.status === "preparing"],
-    ...(!run.testOnly ? [["Try fixes", startedChecks, run.status === "running"]] : []),
-    ["Run the checks", checked, run.status === "evaluating"],
-  ];
-  return `<ol class="run-progress" aria-label="Run progress">${steps.map(([name, done, current], index) =>
-    `<li${current ? ' aria-current="step"' : ""}><span class="progress-mark ${done ? "done" : current ? "current" : ""}">${done ? icon("check") : index + 1}</span>
-      <span>${name}</span><small>${done ? "Done" : current ? "Now" : run.status === "failed" ? "Skipped" : "Waiting"}</small></li>`).join("")}</ol>`;
+function runSteps(run) {
+  const branches = run.branches || [];
+  const testsStarted = branches.some(team => team.tests?.length || ["passed", "rejected"].includes(team.status));
+  const workStarted = branches.some(team => team.startedAt);
+  const phases = run.testOnly ? [["preparing", "Set up"], ["evaluating", "Run tests"]]
+    : [["preparing", "Set up"], ["running", "Write fixes"], ["evaluating", "Run tests"], ["promoting", "Use the fix"]];
+  const failure = testsStarted ? "evaluating" : workStarted && !run.testOnly ? "running" : "preparing";
+  const step = phases.findIndex(([phase]) => phase === (run.status === "failed" ? failure : run.status));
+  return phases.map(([phase, title], index) => {
+    let state = "Later";
+    if (run.status === "promoted" || run.status === "ready" && phase !== "promoting" || step > index) state = "Done";
+    else if (run.status === "ready") state = "Your choice";
+    else if (index === step) state = run.status === "failed" ? "Failed" : "Now";
+    else if (run.status === "failed") state = "Skipped";
+    else if (run.status === "queued" && index === 0) state = "Next";
+    return {title, state};
+  });
 }
 
-function missionConsole(run, branch) {
-  const branches = run.branches || [];
+function runProgress(steps) {
+  return `<ol class="run-progress" aria-label="Run steps">${steps.map(({title, state}, index) =>
+    `<li class="${state === "Now" ? "current" : state === "Done" ? "done" : state === "Failed" ? "failed" : ""}"${state === "Now" ? ' aria-current="step"' : ""}>
+      <span class="progress-mark" aria-hidden="true">${state === "Done" ? icon("check") : state === "Failed" ? icon("close") : index + 1}</span>
+      <span>${title}<span class="visually-hidden">, ${state}</span></span></li>`).join("")}</ol>`;
+}
+
+function missionCode(run, branch) {
   const files = changedFiles(branch);
   const view = workspaceView(run, branch);
   const file = files.includes(data.file) ? data.file : files[0];
   const patch = view === "changes" ? missionDiff(branch, file) : "";
   const diff = patch.split("\n").filter(line => !/^(diff --git |index |--- |\+\+\+ |@@ )/.test(line)).join("\n");
-  const events = (run.logs || []).slice(-45);
-  return `<div class="mission-grid">
-    <section class="mission-panel" aria-label="Code">
-      <div class="mission-panel-head"><h2>Code</h2>${!run.testOnly && branches.length > 1 ? `<label class="code-team">Team <select id="code-team" aria-label="Team shown in code">${branches.map(team =>
-        `<option value="${esc(team.id)}"${team.id === branch?.id ? " selected" : ""}>${esc(currentTeamName(team.teamName) || team.name)}</option>`).join("")}</select></label>` : ""}</div>
+  return `<section class="mission-panel" aria-label="Code">
+      <div class="mission-panel-head"><h2>Code</h2></div>
       <div class="workspace-views" role="group" aria-label="Workspace view">
         <button data-action="workspace-view" data-tab="repository" aria-pressed="${view === "repository"}">Files</button>
         ${run.testOnly ? "" : `<button data-action="workspace-view" data-tab="changes" aria-pressed="${view === "changes"}">Changes${files.length ? ` (${files.length})` : ""}</button>`}
@@ -779,22 +888,43 @@ function missionConsole(run, branch) {
       ).join("") : '<p>No changed files yet.</p>'}</div>
       ${diff ? '<div class="code-change-key"><span class="code-added">+ Added</span><span class="code-removed">− Removed</span></div>' : ""}
       <div class="mission-code">${diff ? displayDiff(diff.slice(0, 14000)) :
-        `<p class="mission-placeholder">${file ? "No text preview for this file." : "Code changes appear here as the selected agent edits files."}</p>`}</div>
+        `<p class="mission-placeholder">${file ? "No text preview." : "Waiting for changes."}</p>`}</div>
       `}
-    </section>
-    <section class="mission-panel" aria-label="Run progress and commands">
-      <div class="mission-panel-head"><h2>Progress</h2>${link("Full logs", `logs/${id(run.id)}`, "arrow", "text-button")}</div>
-      ${runProgress(run)}
-      <details class="run-technical"><summary>Agent commands and output</summary>
+    </section>`;
+}
+
+function missionActivity(run, branch) {
+  const branches = run.branches || [];
+  const events = (run.logs || []).slice(-45);
+  return `<section class="mission-panel" aria-label="Run activity">
+      <div class="mission-panel-head"><h2>Recent output</h2>${link("Full logs", `logs/${id(run.id)}`, "arrow", "text-button")}</div>
       <div class="mission-terminal" tabindex="0" aria-label="Latest agent actions">
         ${events.length ? events.map(event => `<div class="terminal-event ${esc(event.stream || "system")}">
           <span>${event.branchId ? esc(currentTeamName(branches.find(item => item.id === event.branchId)?.teamName) || `AGENT ${event.branchId}`) : "SWARM"} <time>${formatTime(event.time, true)}</time></span>
           <div>${esc(String(event.message || "").replace(/\x1b\[[0-?]*[ -/]*[@-~]/gu, "").slice(0, 2400))}</div>
         </div>`).join("") : '<p class="mission-placeholder">Waiting for command output.</p>'}
       </div>
-      </details>
     </section>
-  </div>`;
+    ${!run.testOnly && branches.some(team => team.council?.length) ? `<details class="card run-disclosure" data-run-disclosure="team-notes">
+      <summary>Team notes</summary>
+      ${missionTeams(run, branch)}
+    </details>` : ""}
+    <details class="card run-disclosure" data-run-disclosure="configuration"><summary>Run configuration</summary>
+      <dl class="run-config">
+        ${run.activeWorkspace ? `<div><dt>Saved workspace</dt><dd><code>${esc(run.activeWorkspace)}</code></dd></div>` : ""}
+        <div><dt>Functional test</dt><dd><code>${esc(run.functionalCommand)}</code></dd></div>
+        ${run.securityCommand ? `<div><dt>Security test</dt><dd><code>${esc(run.securityCommand)}</code></dd></div>` : ""}
+        ${run.benchmarkCommand ? `<div><dt>Benchmark</dt><dd><code>${esc(run.benchmarkCommand)}</code></dd></div>` : ""}
+      </dl>
+    </details>`;
+}
+
+function checkpointSummary(branch) {
+  const tests = branch?.tests || [];
+  return tests.length ? `<section class="checkpoint-summary">
+    <h2>Checks</h2>
+    <ul class="card">${tests.map(test => `<li><span>${esc(test.name)}</span>${pill(test.status)}</li>`).join("")}</ul>
+  </section>` : "";
 }
 
 function runPage(run) {
@@ -806,38 +936,59 @@ function runPage(run) {
   const extra = deployable ? button("Deploy to Archil", "deploy-run", "up", "primary")
     : !run.testOnly && run.status === "ready" ? button("Promote winner", "promote", "up", "primary") : "";
   const deployment = data.state.deployment?.runId === run.id ? data.state.deployment : null;
-  const [story, explanation] = runStory(run);
-  return `<section class="mission-stage" aria-label="Swarm run">
-    <div class="mission-title">
-      <div><p class="mission-kicker"><span></span> ${run.demoKey ? "Archived scripted demo" : run.testOnly ? "Checkpoint test" : run.sampleKey ? "Live sample run" : "Swarm run"} · ${esc(repoLabel(run))}</p>
-        <h1>${esc(run.task)}</h1></div>
-      <div class="mission-status">${pill(run.status, run.testOnly && run.status === "ready" ? "Checks passed" : "")} ${extra}</div>
-    </div>
-    <div class="run-story ${esc(run.status)}" aria-label="Current step">
-      ${iconSpan(run.status === "failed" ? "close" : ["ready", "promoted"].includes(run.status) ? "check" : "activity", "story-icon")}
-      <div><h2>${esc(story)}</h2><p>${esc(explanation)}</p></div>
-    </div>
+  const story = runStory(run);
+  const steps = runSteps(run);
+  const activeStep = steps.findIndex(step => step.state === "Now");
+  const [, tone] = runBadge(run.status);
+  const firstLine = run.task.split("\n")[0] || run.task;
+  const shortTask = firstLine.length > 160 ? `${firstLine.slice(0, 159).trimEnd()}…` : firstLine;
+  const tabs = [["overview", "Overview"], ["work", run.testOnly ? "Checks & files" : "Code & checks"], ["activity", "Activity"]];
+  const overviewAction = !inFlight.has(run.status) && branch
+    ? button(run.testOnly ? "View checks" : run.status === "ready" ? "Review fix" : "View details", "view-run-work", "arrow", "primary")
+    : "";
+  const branches = run.branches || [];
+  const work = () => `<div class="run-work">
+        <div class="code-actions">
+          ${!run.testOnly && branches.length > 1 ? `<label class="code-team">Team <select id="code-team" aria-label="Team shown in code">${branches.map(team =>
+            `<option value="${esc(team.id)}"${team.id === branch?.id ? " selected" : ""}>${esc(currentTeamName(team.teamName) || team.name)}</option>`).join("")}</select></label>` : ""}
+          ${canFixIssues(run, branch) ? `<button class="button" data-action="fix-issues" data-branch="${esc(branch.id)}">${iconSpan("refresh")} Fix issues</button>` : ""}
+        </div>
+    ${branchDetail(run, branch)}
+    ${missionCode(run, branch)}
+  </div>`;
+  return `<div class="run-detail" data-run-id="${esc(run.id)}">
+    <a class="run-back" href="#runs">← All runs</a>
+    <header class="run-heading">
+      <p class="run-context">${esc(repoLabel(run))}${run.testOnly ? " · Checkpoint test" : run.followUpRunId ? " · Follow-up" : ""}
+        ${run.followUpRunId ? ` · <a href="#runs/${id(run.followUpRunId)}">Original run</a>` : ""}</p>
+      <h1>${esc(shortTask)}</h1>
+      ${shortTask !== run.task ? `<details class="run-disclosure run-task" data-run-disclosure="task"><summary>Full task</summary><p>${esc(run.task)}</p></details>` : ""}
+    </header>
+    <section class="run-status-panel ${data.error ? "waiting" : tone}" aria-label="Run status">
+      <div class="run-now">
+        <div>
+          ${activeStep >= 0 && !data.error ? `<p class="run-step-count">Step ${activeStep + 1} of ${steps.length}</p>` : ""}
+          <h2>${esc(data.error ? "Updates paused" : story.title)}</h2>
+          <p>${data.error ? `Last update: ${esc(story.title)}. Reconnecting…` : esc(story.detail)}</p>
+        </div>
+        ${data.runView === "overview" ? overviewAction : data.runView === "work" ? extra : ""}
+      </div>
+      ${runProgress(steps)}
+    </section>
     ${run.error ? notice(run.error) : ""}
     ${deployment ? `<p class="notice success">Deployed to ${esc(deployment.sandbox)} · ${deployment.service ? "Service running" : "Project files"}${deployment.port ? ` · Port ${esc(deployment.port)}` : ""}</p>` : ""}
-    ${run.testOnly ? "" : missionTeamProgress(run, branch)}
-    ${missionConsole(run, branch)}
-    ${missionTeams(run, branch)}
-    </section>
-    <div class="mission-review">
-    ${branchDetail(run, branch)}
-    <section class="card section">${cardHeader("Run configuration", "")}
-      <dl class="run-config">
-        ${run.activeWorkspace ? `<div><dt>Saved workspace</dt><dd><code>${esc(run.activeWorkspace)}</code></dd></div>` : ""}
-        <div><dt>Functional test</dt><dd><code>${esc(run.functionalCommand)}</code></dd></div>
-        ${run.securityCommand ? `<div><dt>Security test</dt><dd><code>${esc(run.securityCommand)}</code></dd></div>` : ""}
-        ${run.benchmarkCommand ? `<div><dt>Benchmark</dt><dd><code>${esc(run.benchmarkCommand)}</code></dd></div>` : ""}
-      </dl>
-    </section></div>`;
+    <div class="tabs run-tabs" role="tablist" aria-label="Run detail">
+      ${tabs.map(([key, label]) => `<button id="run-tab-${key}" role="tab" aria-controls="run-panel" aria-selected="${data.runView === key}" tabindex="${data.runView === key ? "0" : "-1"}" data-action="run-view" data-tab="${key}">${label}</button>`).join("")}
+    </div>
+    <div id="run-panel" role="tabpanel" aria-labelledby="run-tab-${data.runView}">
+      ${data.runView === "work" ? work() : data.runView === "activity" ? missionActivity(run, branch) : run.testOnly ? checkpointSummary(branch) : missionTeamProgress(run)}
+    </div>
+  </div>`;
 }
 
 function buildDialog(title, subtitle, form, submitLabel, fields, returnToRun = false) {
   dialog.innerHTML = `<form id="${form}">
-    <header class="dialog-head"><div><h2 id="dialog-title">${title}</h2><p>${subtitle}</p></div>
+    <header class="dialog-head"><div><h2 id="dialog-title">${title}</h2>${subtitle ? `<p>${subtitle}</p>` : ""}</div>
       <button type="button" class="button icon-button" data-action="close-dialog" aria-label="Close">${icon("close")}</button></header>
     <div class="dialog-body">${fields}<p class="inline-error" role="alert" hidden></p></div>
     <footer class="dialog-actions">
@@ -859,6 +1010,8 @@ function addRepoDialog(returnToRun = false) {
     </div>`, returnToRun);
 }
 
+const runStepNames = ["Setup", "Checks", "Review"];
+
 function newRunDialog(repoId = "", plan = null) {
   if (!data.state) {
     toast("Workspace is still connecting.", true);
@@ -878,44 +1031,73 @@ function newRunDialog(repoId = "", plan = null) {
     !testOnly && provider && !provider.configured ? "Add a Fireworks AI API key in Settings." : ""
   ].filter(Boolean);
   const lastRepo = repoId || data.runDraft?.get("repoId") || data.selectedRepo || repos[0]?.id;
+  const followUp = Boolean(plan?.followUpRunId);
   const samplePreset = !testOnly && !plan && Boolean(repos.find(repo => repo.id === lastRepo)?.demo);
   const sampleRuntime = samplePreset && runtimes.some(option => option.id === "archil" && option.available) ? "archil" : "";
-  buildDialog(testOnly ? "Review checkpoint test" : "New swarm run",
-    testOnly ? "Run checks against the selected Git checkpoint in isolation." : "Choose a repository and task. Each team has four advisors and a lead.",
-    "run-form", testOnly ? "Run checks" : "Launch swarm", `
+  const title = followUp ? "Fix issues" : testOnly ? "Checkpoint test" : "New swarm run";
+  const launchLabel = followUp ? "Start fix run" : testOnly ? "Run checks" : "Launch swarm";
+  dialog.innerHTML = `<form id="run-form" novalidate data-launch-label="${launchLabel}">
+    <header class="dialog-head">
+      <div><h2 id="dialog-title">${title}</h2>
+      ${followUp ? `<p>${plan.verified ? "Starts from this team’s verified code." : "Starts from the original checkpoint."}</p>` : ""}</div>
+      <button type="button" class="button icon-button" data-action="close-dialog" aria-label="Close">${icon("close")}</button>
+    </header>
+    <ol class="run-wizard-progress" aria-label="Run setup progress">
+      ${runStepNames.map(name => `<li>${name}</li>`).join("")}
+    </ol>
     ${testOnly ? '<input type="hidden" name="testOnly" value="true">' : ""}
-    ${warnings.length ? `<div class="notice">${warnings.join(" ")} ${link("Open Settings", "settings", "arrow", "text-button").replace('href="#settings"', 'href="#settings" data-action="close-dialog"')}</div>` : ""}
-    <div class="field"><label for="run-repository">Repository</label>
-      <div class="repo-picker">
-        <select class="control" id="run-repository" name="repoId" required>${repos.map(repo => `<option value="${esc(repo.id)}"${repo.id === lastRepo ? " selected" : ""}>${esc(repo.name)} · ${esc(repo.ref === "HEAD" ? "default branch" : repo.ref || "default branch")}</option>`).join("")}</select>
-        <button type="button" class="button" data-action="add-repo-for-run">${iconSpan("plus")} Add</button>
+    <section class="dialog-body run-wizard-step" data-run-step aria-labelledby="run-setup-heading">
+      <h3 id="run-setup-heading" tabindex="-1">${testOnly ? "Choose a repository" : "Define the task"}</h3>
+      ${followUp ? `<input type="hidden" name="followUpRunId" value="${esc(plan.followUpRunId)}">
+      <input type="hidden" name="followUpBranchId" value="${esc(plan.followUpBranchId)}">
+      <input type="hidden" name="repoId" value="${esc(lastRepo)}">
+      <div class="field">Repository <span>${esc(repos.find(repo => repo.id === lastRepo)?.name)}</span></div>` : `
+      <div class="field"><label for="run-repository">Repository</label>
+        <div class="repo-picker">
+            <select class="control" id="run-repository" name="repoId" required>${repos.map(repo => `<option value="${esc(repo.id)}"${repo.id === lastRepo ? " selected" : ""}>${esc(repo.name)}${repo.ref && repo.ref !== "HEAD" ? ` · ${esc(repo.ref)}` : ""}</option>`).join("")}</select>
+          <button type="button" class="button" data-action="add-repo-for-run">${iconSpan("plus")} Add</button>
+        </div>
+      </div>`}
+      <label class="check-field demo-mode" id="demo-mode" hidden><input type="checkbox" name="demo"> Use sample task and checks</label>
+      ${testOnly ? "" : '<label class="field">Task <textarea class="control" name="task" rows="3" required placeholder="Describe the change the agents should make."></textarea></label>'}
+    </section>
+    <section class="dialog-body run-wizard-step" data-run-step aria-labelledby="run-checks-heading" hidden>
+      <h3 id="run-checks-heading" tabindex="-1">Set up checks</h3>
+      <div class="form-grid test-fields">
+        <label class="field">Functional test command <input class="control" name="functionalCommand" required placeholder="npm test"></label>
+        <label class="field">Security test command <input class="control" name="securityCommand" ${testOnly ? "" : "required"} placeholder="npm run test:security"></label>
       </div>
-    </div>
-    <label class="check-field demo-mode" id="demo-mode" hidden><input type="checkbox" name="demo"> Use sample task and checks</label>
-    ${testOnly ? "" : '<label class="field">Task <textarea class="control" name="task" rows="3" required placeholder="Describe the change the agents should make."></textarea></label>'}
-    <div class="form-grid">
-      ${testOnly ? "" : '<label class="field">Teams <input class="control" name="agentCount" type="number" min="2" max="6" value="3" required></label>'}
-      ${runtimes.length ? `<label class="field">Runtime <select class="control" name="runtime">${runtimes.map(option =>
-        `<option value="${esc(option.id)}"${option.available ? "" : " disabled"}${option.id === sampleRuntime ? " selected" : ""}>${esc(option.name)}${option.available ? "" : " · Unavailable"}</option>`).join("")}</select></label>` : ""}
-    </div>
-    <div class="form-grid">
-      <label class="field">Functional test command <input class="control" name="functionalCommand" required placeholder="npm test"></label>
-      <label class="field">Security test command <input class="control" name="securityCommand" ${testOnly ? "" : "required"} placeholder="npm run test:security"></label>
-    </div>
-    ${!testOnly && research ? '<label class="check-field"><input type="checkbox" name="research"> Gather research with Keenable <small>Sends the task text to Keenable and gives the teams relevant search excerpts.</small></label>' : ""}
-    <label class="check-field"><input type="checkbox" name="dependencyCheck"> Check locked npm dependencies with Casco <small id="casco-help">Sends package names and versions from the root npm lockfile.</small></label>
-    <details class="advanced">
-      <summary>Advanced options</summary>
-      <div class="advanced-fields">
-        <label class="field">Benchmark command <input class="control" name="benchmarkCommand" placeholder="npm run benchmark"><small>Optional. Print one nonnegative number to stdout. Lower scores rank first.</small></label>
-        <label class="field">Protected paths <textarea class="control" name="protectedPaths" rows="2" placeholder="One path per line"></textarea></label>
-        <label class="field">Agent hints <textarea class="control" name="hints" rows="2" placeholder="One optional hint per agent, in order"></textarea></label>
-        <label class="field">Agent models <textarea class="control" name="models" rows="2" placeholder="One model ID per agent, in order"></textarea><small>${settings.modelProvider === "fireworks" ? esc(settings.fireworksModels.map(model => model.name).join(" · ")) : "Default model is claude-sonnet-4-6."}</small></label>
+      <label class="check-field"><input type="checkbox" name="dependencyCheck"> Check dependencies with Casco <small id="casco-help">Sends locked npm package names and versions.</small></label>
+    </section>
+    <section class="dialog-body run-wizard-step" data-run-step aria-labelledby="run-review-heading" hidden>
+      <h3 id="run-review-heading" tabindex="-1">Review your run</h3>
+      <dl class="run-wizard-summary"></dl>
+      ${warnings.length ? `<p class="notice">${warnings.join(" ")} <a href="#settings" data-action="close-dialog">Open Settings</a></p>` : ""}
+      <div class="form-grid">
+        ${testOnly ? "" : '<label class="field">Teams <input class="control" name="agentCount" type="number" min="2" max="6" value="3" required></label>'}
+        ${runtimes.length ? `<label class="field">Runtime <select class="control" name="runtime">${runtimes.map(option =>
+          `<option value="${esc(option.id)}"${option.available ? "" : " disabled"}${option.id === sampleRuntime ? " selected" : ""}>${esc(option.name)}${option.available ? "" : " · Unavailable"}</option>`).join("")}</select></label>` : ""}
       </div>
-    </details>`);
+      ${!testOnly && research ? '<label class="check-field"><input type="checkbox" name="research"> Search with Keenable <small>Sends the task text to Keenable.</small></label>' : ""}
+      <details class="advanced">
+        <summary>Advanced options</summary>
+        <div class="advanced-fields">
+          <label class="field">Benchmark command <input class="control" name="benchmarkCommand" placeholder="npm run benchmark"><small>Optional. Print one nonnegative number to stdout. Lower scores rank first.</small></label>
+          <label class="field">Protected paths <textarea class="control" name="protectedPaths" rows="2" placeholder="One path per line"></textarea></label>
+          <label class="field">Agent hints <textarea class="control" name="hints" rows="2" placeholder="One optional hint per agent, in order"></textarea></label>
+          <label class="field">Agent models <textarea class="control" name="models" rows="2" placeholder="One model ID per agent, in order"></textarea><small>${settings.modelProvider === "fireworks" ? esc(settings.fireworksModels.map(model => model.name).join(" · ")) : "Default model is claude-sonnet-4-6."}</small></label>
+        </div>
+      </details>
+    </section>
+    <p class="inline-error run-wizard-error" role="alert" hidden></p>
+    <footer class="dialog-actions">
+      <button type="button" class="button" data-action="run-back">Cancel</button>
+      <button type="submit" class="button primary">Continue</button>
+    </footer>
+  </form>`;
+  const form = dialog.querySelector("#run-form");
   const fromDraft = data.runDraft?.get("repoId") === lastRepo;
   if (data.runDraft) {
-    const form = dialog.querySelector("#run-form");
     for (const [key, value] of data.runDraft) {
       if (key === "repoId") continue;
       const field = form.elements.namedItem(key);
@@ -925,19 +1107,55 @@ function newRunDialog(repoId = "", plan = null) {
     }
     data.runDraft = null;
   }
-  const form = dialog.querySelector("#run-form");
   applyDemoPreset(form, !plan && !fromDraft, !fromDraft);
   if (plan) {
-    for (const name of ["task", "functionalCommand", "securityCommand"]) {
-      if (form.elements[name]) form.elements[name].value = plan[name] || "";
+    for (const name of ["task", "functionalCommand", "securityCommand", "benchmarkCommand", "protectedPaths", "agentCount"]) {
+      if (form.elements[name] && plan[name] !== undefined) form.elements[name].value = plan[name];
     }
+    if (followUp) form.elements.dependencyCheck.checked = plan.dependencyCheck;
+    if (runtimes.some(option => option.id === plan.runtime && option.available)) form.elements.runtime.value = plan.runtime;
   }
+  if (!dialog.open) dialog.showModal();
+  showRunStep(form, 0);
+}
+
+function showRunStep(form, step) {
+  const steps = [...form.querySelectorAll("[data-run-step]")];
+  const review = step === steps.length - 1;
+  steps.forEach((panel, index) => { panel.hidden = index !== step; });
+  form.querySelectorAll(".run-wizard-progress li").forEach((item, index) => {
+    item.classList.toggle("complete", index < step);
+    if (index === step) item.setAttribute("aria-current", "step");
+    else item.removeAttribute("aria-current");
+  });
+  form.querySelector('[data-action="run-back"]').textContent = step === 0 ? "Cancel" : "Back";
+  form.querySelector('[type="submit"]').textContent = review ? form.dataset.launchLabel : "Continue";
+  form.querySelector(".inline-error").hidden = true;
+  if (review) {
+    const fields = form.elements;
+    const repo = data.state.repos.find(item => item.id === fields.repoId.value);
+    const summary = [
+      ["Repository", repo?.name],
+      ["Task", fields.task?.value.trim()],
+      ["Functional test", fields.functionalCommand.value.trim()],
+      ["Security test", fields.securityCommand.value.trim()],
+      ["Dependency check", fields.dependencyCheck.checked && !fields.dependencyCheck.disabled ? "Casco" : ""]
+    ];
+    form.querySelector(".run-wizard-summary").innerHTML = summary.filter(([, value]) => value)
+      .map(([label, value]) => `<div><dt>${label}</dt><dd>${esc(value)}</dd></div>`).join("");
+  }
+  dialog.scrollTop = 0;
+  steps[step].querySelector("h3").focus({preventScroll: true});
+}
+
+function currentRunStep(form) {
+  return [...form.querySelectorAll("[data-run-step]")].findIndex(panel => !panel.hidden);
 }
 
 function applyDemoPreset(form, chooseDefault = false, resetResearch = true) {
   const fields = form.elements;
   const repo = data.state.repos.find(item => item.id === fields.repoId.value);
-  const demo = fields.testOnly ? null : repo?.demo;
+  const demo = fields.testOnly || fields.followUpRunId ? null : repo?.demo;
   if (fields.testOnly) {
     form.querySelector(".advanced").hidden = true;
     return;
@@ -948,8 +1166,8 @@ function applyDemoPreset(form, chooseDefault = false, resetResearch = true) {
   if (fields.research && resetResearch) fields.research.checked = preset;
   fields.dependencyCheck.disabled = preset;
   form.querySelector("#casco-help").textContent = preset
-    ? "This sample uses Node.js built-ins and has no npm lockfile."
-    : "Sends package names and versions from the root npm lockfile.";
+    ? "This demo has no npm dependencies."
+    : "Sends locked npm package names and versions.";
   for (const name of ["task", "functionalCommand", "securityCommand"]) {
     if (preset) fields[name].value = demo[name];
     fields[name].readOnly = preset;
@@ -962,10 +1180,14 @@ function applyDemoPreset(form, chooseDefault = false, resetResearch = true) {
 function renderPage() {
   const {page, param} = route();
   const mission = page === "runs" && Boolean(param);
+  headerRun.hidden = Boolean(data.state && page === "runs" && !param);
+  const activeRuns = data.state?.runs.filter(run => inFlight.has(run.status)).length || 0;
   navigation.innerHTML = Object.entries(navItems).map(([key, [name, glyph]]) =>
-    `<a href="#${key}"${key === page ? ' aria-current="page"' : ""}>${iconSpan(glyph)}${name}</a>`).join("");
+    `<a href="#${key}"${key === page ? ' aria-current="page"' : ""}>${iconSpan(glyph)}${name}${key === "runs" && activeRuns
+      ? `<span class="run-nav-count" title="${plural(activeRuns, "active run")}">${activeRuns}<span class="visually-hidden"> active</span></span>` : ""}</a>`).join("");
   main.classList.toggle("flight-main", page === "overview");
   main.classList.toggle("mission-main", mission);
+  main.classList.toggle("usage-main", page === "usage");
   document.title = `${navItems[page][0]} · Matrix Swarm`;
   const ready = data.state && !data.error;
   sidebar.innerHTML = `<div class="connection-state"><span class="state-dot${ready ? "" : " offline"}"></span>${ready ? "Local online" : data.error ? "Offline" : "Connecting"}</div>`;
@@ -975,10 +1197,19 @@ function renderPage() {
   }
   const views = {overview, repositories: repositoriesPage, logs: logsPage, usage: usagePage, settings: settingsPage};
   const run = page === "overview" ? currentFlight() : mission ? findRun(decodeURIComponent(param)) : null;
+  const announcement = document.querySelector("#run-announcement");
+  const runMessage = mission && run ? `${data.error ? "Updates paused" : runBadge(run.status)[0]}. ${runStory(run).title}.` : "";
+  if (announcement.textContent !== runMessage) announcement.textContent = runMessage;
   const content = page === "runs" ? (mission ? runPage(run) : runsPage()) : views[page]();
-  const scrollTarget = main.querySelector(".log-view, .diff");
+  const scrollSelector = ".log-view, .diff, .provider-activity .scroll-table";
+  const scrollTarget = main.querySelector(scrollSelector);
   const previousScroll = scrollTarget?.scrollTop || 0;
-  const technicalOpen = Boolean(main.querySelector(".run-technical")?.open);
+  const previousLeft = scrollTarget?.scrollLeft || 0;
+  const sameRun = mission && main.querySelector(".run-detail")?.dataset.runId === run?.id;
+  const openDisclosures = new Set(sameRun
+    ? [...main.querySelectorAll("[data-run-disclosure][open]")].map(item => item.dataset.runDisclosure)
+    : []);
+  const accountUsageOpen = Boolean(main.querySelector(".account-usage")?.open);
   const openTests = [...main.querySelectorAll(".test-result")].map(test => test.open);
   const openMembers = new Set([...main.querySelectorAll(".team-member[open]")].map(member => member.dataset.member));
   const codeTeamFocused = document.activeElement?.id === "code-team";
@@ -987,10 +1218,11 @@ function renderPage() {
   const followOutput = !oldTerminal || oldTerminal.scrollHeight - terminalScroll - oldTerminal.clientHeight < 36;
   const repositoryScroll = [...main.querySelectorAll("[data-scroll-path]")];
   const activeElement = document.activeElement;
+  const focusedRunLink = activeElement?.matches(".run-row") ? activeElement.getAttribute("href") : null;
   const focusedControl = main.contains(activeElement) ? activeElement.dataset : null;
   const focusedMember = main.contains(activeElement) ? activeElement.closest(".team-member")?.dataset.member : null;
   const view = document.createElement("template");
-  view.innerHTML = (data.error ? notice(data.error) : "") + content;
+  view.innerHTML = (data.error && !(mission && run) ? notice(data.error) : "") + content;
   const canvas = view.content.querySelector("#flight-canvas");
   const scopeKey = canvas ? `${page}/${run?.id || ""}` : null;
   if (flightScope && flightScope.key !== scopeKey) {
@@ -1006,10 +1238,22 @@ function renderPage() {
   flightScope?.update(run);
   if (page === "logs") refreshLogOutput();
   if (page === "usage") drawGrowth();
-  const nextScroll = main.querySelector(".log-view, .diff");
-  if (nextScroll) nextScroll.scrollTop = previousScroll;
-  const technical = main.querySelector(".run-technical");
-  if (technical) technical.open = technicalOpen;
+  const nextScroll = main.querySelector(scrollSelector);
+  if (nextScroll) {
+    nextScroll.scrollTo(previousLeft, previousScroll);
+    if (scrollTarget === activeElement) nextScroll.focus({preventScroll: true});
+  }
+  main.querySelectorAll("[data-run-disclosure]").forEach(item => {
+    item.open = openDisclosures.has(item.dataset.runDisclosure);
+    if (activeElement?.parentElement?.dataset.runDisclosure === item.dataset.runDisclosure) {
+      item.querySelector("summary").focus({preventScroll: true});
+    }
+  });
+  const accountUsage = main.querySelector(".account-usage");
+  if (accountUsage) {
+    accountUsage.open = accountUsageOpen;
+    if (activeElement?.matches(".account-usage summary")) accountUsage.querySelector("summary").focus({preventScroll: true});
+  }
   if (codeTeamFocused) main.querySelector("#code-team")?.focus({preventScroll: true});
   const terminal = main.querySelector(".mission-terminal");
   if (terminal) terminal.scrollTop = followOutput ? terminal.scrollHeight : terminalScroll;
@@ -1017,7 +1261,10 @@ function renderPage() {
     const previous = repositoryScroll.find(item => item.className === panel.className && item.dataset.scrollPath === panel.dataset.scrollPath);
     if (previous) panel.scrollTo(previous.scrollLeft, previous.scrollTop);
   }
-  if (focusedControl?.branch || focusedControl?.file !== undefined || focusedControl?.tab || focusedControl?.point) {
+  if (focusedRunLink) {
+    [...main.querySelectorAll(".run-row")].find(item => item.getAttribute("href") === focusedRunLink)?.focus({preventScroll: true});
+  }
+  if (focusedControl?.branch || focusedControl?.file !== undefined || focusedControl?.tab || focusedControl?.point || focusedControl?.action === "new-run") {
     const replacement = [...main.querySelectorAll("button[data-action]")].find(item =>
       item.dataset.action === focusedControl.action && item.dataset.branch === focusedControl.branch &&
       item.dataset.file === focusedControl.file && item.dataset.tab === focusedControl.tab && item.dataset.point === focusedControl.point);
@@ -1028,13 +1275,13 @@ function renderPage() {
     member.open = openMembers.has(member.dataset.member);
     if (!focusedControl?.action && member.dataset.member === focusedMember) member.querySelector("summary")?.focus({preventScroll: true});
   });
-  if (mission && run?.baseCommit && workspaceView(run, selectedBranch(run)) === "repository") {
+  if (mission && data.runView === "work" && run?.baseCommit && workspaceView(run, selectedBranch(run)) === "repository") {
     const branch = selectedBranch(run);
     const {folder, file} = repositoryLocation(run, branch);
     void loadRepositoryEntry(run, branch, folder);
     if (file) void loadRepositoryEntry(run, branch, file);
   }
-  if (mission && run?.baseCommit && data.workspaceView === "review") {
+  if (mission && data.runView === "work" && run?.baseCommit && data.workspaceView === "review") {
     const files = reviewPoints(selectedBranch(run)).map(point => point.path);
     const file = files.includes(data.reviewFile) ? data.reviewFile : files[0];
     if (file) void loadRepositoryEntry(run, null, file);
@@ -1205,6 +1452,20 @@ async function formSubmit(event) {
   const form = event.target;
   if (form !== dialog.querySelector("form") && !form.matches("[data-provider-form]")) return;
   event.preventDefault();
+  if (form.id === "run-form") {
+    if (form.hasAttribute("aria-busy")) return;
+    const step = currentRunStep(form);
+    const panel = form.querySelectorAll("[data-run-step]")[step];
+    for (const field of panel.querySelectorAll("[required]")) {
+      field.setCustomValidity(field.value && !field.value.trim() ? "Enter a value." : "");
+      if (!field.reportValidity()) return;
+    }
+    if (step < runStepNames.length - 1) {
+      showRunStep(form, step + 1);
+      return;
+    }
+    form.querySelector(".inline-error").hidden = true;
+  }
   const values = new FormData(form);
   const text = name => String(values.get(name) ?? "").trim();
   const lines = name => {
@@ -1213,8 +1474,14 @@ async function formSubmit(event) {
     return entries;
   };
   const errorTarget = form.querySelector(".inline-error");
+  const submit = form.querySelector("[type=submit]");
+  const submitLabel = submit?.textContent;
+  if (form.id === "run-form" && submit) {
+    submit.textContent = "Starting…";
+    form.setAttribute("aria-busy", "true");
+  }
   try {
-    await withButton(form.querySelector("[type=submit]"), async () => {
+    await withButton(submit, async () => {
       if (form.id === "repo-form") {
         const repo = await request("/repos", "POST", {source: text("source"), name: text("name"), ref: text("ref")});
         data.state.repos = [...data.state.repos.filter(item => item.id !== repo.id), repo];
@@ -1226,6 +1493,8 @@ async function formSubmit(event) {
       } else if (form.id === "run-form") {
         const run = await request("/runs", "POST", {
           repoId: text("repoId"),
+          followUpRunId: text("followUpRunId") || undefined,
+          followUpBranchId: text("followUpBranchId") || undefined,
           demo: values.has("demo"),
           testOnly: values.has("testOnly"),
           runtime: text("runtime") || undefined,
@@ -1244,9 +1513,8 @@ async function formSubmit(event) {
         data.runDraft = null;
         data.state.runs = [run, ...data.state.runs.filter(item => item.id !== run.id)];
         dialog.close();
-        data.launchId = run.id;
         location.hash = `runs/${id(run.id)}`;
-        toast(run.testOnly ? "Checkpoint test started." : "Swarm run started.");
+        toast(run.status === "queued" ? "Run queued. Setup is next." : "Run accepted.");
       } else if (form.id === "deploy-form") {
         const result = await request(`/runs/${id(text("runId"))}/deploy`, "POST", {
           command: text("command"), port: text("port") ? Number(text("port")) : undefined,
@@ -1283,8 +1551,14 @@ async function formSubmit(event) {
     if (errorTarget) {
       errorTarget.textContent = error.message;
       errorTarget.hidden = false;
+      if (form.id === "run-form") errorTarget.scrollIntoView({block: "nearest"});
     } else {
       toast(error.message, true);
+    }
+  } finally {
+    if (form.id === "run-form" && submit) {
+      submit.textContent = submitLabel;
+      form.removeAttribute("aria-busy");
     }
   }
 }
@@ -1293,9 +1567,24 @@ async function handleAction(event) {
   const element = event.target.closest("[data-action]");
   if (!element) return;
   const {action, provider, repo, branch, tab} = element.dataset;
+  if (element.closest('#run-form[aria-busy="true"]')) {
+    event.preventDefault();
+    return;
+  }
+  if (action === "run-back") {
+    const form = element.form;
+    const step = currentRunStep(form);
+    if (step === 0) dialog.close();
+    else showRunStep(form, step - 1);
+  }
   if (action === "open-chat") openChat();
   if (action === "new-run") newRunDialog();
   if (action === "run-repo") newRunDialog(repo);
+  if (action === "fix-issues") {
+    const run = findRun(decodeURIComponent(route().param));
+    const selected = run?.branches.find(item => item.id === branch);
+    if (run && canFixIssues(run, selected)) newRunDialog(run.repoId, followUpPlan(run, selected));
+  }
   if (action === "reset-repo") {
     const selected = data.state.repos.find(item => item.id === repo);
     if (!selected) return;
@@ -1333,6 +1622,7 @@ async function handleAction(event) {
     renderPage();
   }
   if (action === "open-review") {
+    data.runView = "work";
     data.branch = branch;
     data.reviewFile = element.dataset.file;
     data.reviewPoint = element.dataset.point;
@@ -1366,13 +1656,21 @@ async function handleAction(event) {
     data.repoEntries.delete(repositoryKey(run, data.workspaceView === "review" ? null : selectedBranch(run), element.dataset.file));
     renderPage();
   }
-  if (action === "choose-branch") {
-    data.branch = branch;
+  if (action === "choose-branch" || action === "view-run-work") {
+    data.runView = "work";
+    if (branch) data.branch = branch;
+    data.branchTab = "tests";
+    data.workspaceView = "auto";
     data.file = "";
     data.reviewPoint = "";
     data.reviewJump = false;
     renderPage();
-    [...main.querySelectorAll(".branch-link")].find(item => item.dataset.branch === branch)?.focus();
+    document.getElementById("run-tab-work")?.focus();
+  }
+  if (action === "run-view") {
+    data.runView = tab;
+    renderPage();
+    document.getElementById(`run-tab-${tab}`)?.focus({preventScroll: true});
   }
   if (action === "branch-tab") {
     data.branchTab = tab;
@@ -1417,9 +1715,8 @@ async function handleAction(event) {
 function onRouteChange() {
   const current = route();
   const mission = current.page === "runs" && Boolean(current.param);
-  const intro = mission && current.param === data.launchId;
-  data.launchId = null;
-  showRain(mission ? "mission" : current.page === "overview" ? "control" : "", intro);
+  showRain(current.page === "overview" ? "control" : "");
+  data.runView = mission && current.branch ? "work" : "overview";
   data.branch = current.page === "runs" ? current.branch || null : null;
   data.file = "";
   data.workspaceView = "auto";
@@ -1433,7 +1730,7 @@ function onRouteChange() {
   data.branchTab = "tests";
   data.logRun = current.page === "logs" && current.param ? decodeURIComponent(current.param) : "";
   renderPage();
-  if (intro) window.scrollTo(0, 0);
+  if (mission) window.scrollTo(0, 0);
   void poll();
 }
 
@@ -1472,6 +1769,9 @@ document.addEventListener("keydown", event => {
   const index = event.key === "Home" ? 0 : event.key === "End" ? tabs.length - 1 : (tabs.indexOf(tab) + offset + tabs.length) % tabs.length;
   event.preventDefault();
   tabs[index].click();
+});
+dialog.addEventListener("cancel", event => {
+  if (dialog.querySelector('#run-form[aria-busy="true"]')) event.preventDefault();
 });
 dialog.addEventListener("close", () => { data.runDraft = null; });
 window.addEventListener("hashchange", onRouteChange);

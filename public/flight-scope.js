@@ -112,7 +112,7 @@ export function mountFlightScope(canvas) {
       context.restore();
 
       context.fillStyle = color;
-      context.font = "bold 10px monospace";
+      context.font = "bold 13px monospace";
       context.textAlign = "center";
       context.textBaseline = "middle";
       context.fillText(branch.id, x + Math.cos(angle) * (r + 15), y + Math.sin(angle) * (r + 15));

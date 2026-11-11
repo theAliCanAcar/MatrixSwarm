@@ -105,6 +105,14 @@ async function createCheckpoint(config, checkpointDir, signal) {
   return commit;
 }
 
+async function commitVerifiedTree(checkpointDir, run, branch) {
+  return (await git([
+    '--git-dir', checkpointDir,
+    '-c', 'user.name=Matrix Swarm', '-c', 'user.email=swarm@localhost', 'commit-tree',
+    branch.tree, '-p', run.baseCommit, '-m', `Matrix Swarm verified agent ${branch.id}`,
+  ])).trim();
+}
+
 function treeEntries(output) {
   return output.split('\0').filter(Boolean).map(row => {
     const tab = row.indexOf('\t');
@@ -390,6 +398,7 @@ function configFor(input) {
     runtime: input.runtime || 'docker', research: input.research === true,
     dependencyCheck: input.dependencyCheck === true, useActiveWorkspace: input.useActiveWorkspace !== false,
     sampleKey: input.sampleKey || null, modelProvider: input.modelProvider, testOnly: input.testOnly === true,
+    ...(input.followUpRunId ? { followUpRunId: input.followUpRunId } : {}),
   };
 }
 
@@ -630,9 +639,11 @@ export function createEngine({ rootDir, agent, resolveRuntime, research, checkDe
             branchLog(`${name} check: $ ${command}`);
             let exitCode = null;
             let error = null;
+            let output;
             try {
               const result = await runtime.verify({ branch, patch, command, log: branchLog, signal });
               exitCode = result.exitCode;
+              if (exitCode !== 0) output = (result.stderr?.trim() || result.stdout?.trim())?.slice(0, 1000);
               if (name === 'Benchmark' && exitCode === 0) {
                 const output = result.stdout.trim();
                 const score = Number(output);
@@ -646,7 +657,7 @@ export function createEngine({ rootDir, agent, resolveRuntime, research, checkDe
               branchLog(error, 'error');
             }
             const status = exitCode === 0 && !error ? 'passed' : 'failed';
-            branch.tests.push({ name, status, exitCode, durationMs: Date.now() - started, error });
+            branch.tests.push({ name, status, exitCode, durationMs: Date.now() - started, error, ...(output ? { output } : {}) });
             branchLog(`${name} check ${status}${exitCode === null ? '.' : ` (exit ${exitCode}).`}`, status === 'passed' ? 'info' : 'warn');
             persist(run);
           };
@@ -724,6 +735,17 @@ export function createEngine({ rootDir, agent, resolveRuntime, research, checkDe
   return {
     list() { return [...runs.values()].sort((a, b) => b.createdAt.localeCompare(a.createdAt)).map((run) => present(run, false)); },
     get(id) { return present(runs.get(id), true); },
+    async followUpSource(id, branchId, repoId) {
+      const run = runs.get(id);
+      const branch = run?.branches.find(item => item.id === branchId);
+      if (!run?.baseCommit || !branch || !terminal.has(run.status) || run.repoId !== repoId) return null;
+      const repo = join(runsDir, run.id, 'checkpoint.git');
+      if (!existsSync(repo)) return null;
+      const repoRef = branch.status === 'passed' && branch.tree
+        ? await commitVerifiedTree(repo, run, branch)
+        : run.baseCommit;
+      return { repo, repoRef };
+    },
     repository(id, path, branchId) {
       const run = runs.get(id);
       const revision = branchId ? run?.branches.find(branch => branch.id === branchId)?.tree : run?.baseCommit;
@@ -770,10 +792,7 @@ export function createEngine({ rootDir, agent, resolveRuntime, research, checkDe
       transition(run, 'promoting');
       try {
         if (existsSync(path)) await inCheckpoint(['worktree', 'remove', '--force', path]);
-        const commit = (await inCheckpoint([
-          '-c', 'user.name=Matrix Swarm', '-c', 'user.email=swarm@localhost', 'commit-tree',
-          branch.tree, '-p', run.baseCommit, '-m', `Matrix Swarm verified agent ${branch.id}`,
-        ])).trim();
+        const commit = await commitVerifiedTree(checkpointDir, run, branch);
         let checkoutWarnings = '';
         await inCheckpoint(['worktree', 'add', '--detach', path, commit], {
           onOutput: (stream, output) => { if (stream === 'stderr') checkoutWarnings += output; },

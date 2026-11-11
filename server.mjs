@@ -104,24 +104,34 @@ function settings() {
   };
 }
 
-function fireworksGrowth() {
-  const events = state.usage.filter(event => event.provider === "fireworks")
-    .sort((first, second) => first.at.localeCompare(second.at));
+const usageChartMetrics = {
+  fireworks: { label: "Input and output tokens", sources: ["Input tokens", "Output tokens"], unit: "tokens" },
+  anthropic: { label: "Input and output tokens", sources: ["Input tokens", "Output tokens"], unit: "tokens" },
+  archil: { label: "Sandbox forks", sources: ["Sandbox forks"], unit: "forks" },
+  keenable: { label: "Search results", sources: ["Search results"], unit: "results" },
+  casco: { label: "Package versions checked", sources: ["Package versions checked"], unit: "packages" },
+};
+
+function providerGrowth(events, chartMetric) {
+  const chronological = events.slice().sort((first, second) => first.at.localeCompare(second.at));
   const step = Math.max(1, Math.ceil(events.length / 120));
   const points = [];
-  let tokens = 0;
-  for (const [index, event] of events.entries()) {
+  let total = 0;
+  let measured = false;
+  for (const [index, event] of chronological.entries()) {
     for (const metric of event.metrics || []) {
-      if (Number.isFinite(metric.value) && ["Input tokens", "Output tokens"].includes(metric.label)) tokens += metric.value;
+      if (metric.unit === chartMetric.unit && chartMetric.sources.includes(metric.label) && Number.isFinite(metric.value)) {
+        total += metric.value;
+        measured = true;
+      }
     }
-    if (index % step === 0 || index === events.length - 1) points.push({ at: event.at, requests: index + 1, tokens });
+    if (index % step === 0 || index === events.length - 1) points.push({ at: event.at, requests: index + 1, total });
   }
-  return points;
+  return { points, metricLabel: measured ? chartMetric.label : null };
 }
 
 function usage() {
   return {
-    fireworksGrowth: fireworksGrowth(),
     fireworksCooldowns: fireworks.capacity(),
     providers: settings().providers.filter(provider => provider.id !== "anthropic" || state.usage.some(event => event.provider === "anthropic")).map(({ fields, ...provider }) => {
       const events = state.usage.filter(event => event.provider === provider.id);
@@ -138,6 +148,7 @@ function usage() {
         requests: events.length,
         successes: events.filter(event => event.status === "success").length,
         failures: events.filter(event => event.status === "failed").length,
+        growth: providerGrowth(events, usageChartMetrics[provider.id]),
         ...(provider.id === "fireworks" ? {
           rateLimited: events.filter(event => event.httpStatus === 429).length,
           overloaded: events.filter(event => event.httpStatus === 503).length,
@@ -262,8 +273,16 @@ async function startRun(body) {
   if (protectedPaths.some(path => isAbsolute(path) || path.split("/").includes(".."))) {
     throw new HttpError(400, "Protected paths must be relative to the repository.");
   }
+  let source = { repo: current?.path || repo.source, repoRef: current ? "HEAD" : repo.ref };
+  const followUpRunId = requireText(body.followUpRunId, "a source run", 64, true);
+  if (followUpRunId) {
+    if (demo || testOnly) throw new HttpError(400, "A fix run needs a custom coding task.");
+    const branch = requireText(body.followUpBranchId, "a source team", 16);
+    source = await engine.followUpSource(followUpRunId, branch, repo.id);
+    if (!source) throw new HttpError(409, "This run no longer has a checkpoint to start from.");
+  }
   return engine.start({
-    repoId: repo.id, repo: current?.path || repo.source, repoRef: current ? "HEAD" : repo.ref,
+    repoId: repo.id, ...source, followUpRunId,
     task: testOnly ? `Test ${repo.name}` : demo?.task || requireText(body.task, "a task", 12000), agentCount,
     functionalCommand: demo?.functionalCommand || requireText(body.functionalCommand, "a functional test command", 4000),
     securityCommand: demo?.securityCommand || requireText(body.securityCommand, "a security test command", 4000, testOnly),
