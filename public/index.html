@@ -1,0 +1,50 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width,initial-scale=1">
+  <meta name="theme-color" content="#050a07">
+  <meta name="description" content="Matrix Swarm runs parallel coding agents and promotes verified changes.">
+  <title>Matrix Swarm</title>
+  <link rel="stylesheet" href="/styles.css">
+  <link rel="stylesheet" href="/flight.css">
+  <link rel="stylesheet" href="/mission.css">
+  <script type="module" src="/app.js"></script>
+</head>
+<body>
+  <canvas id="matrix-rain" aria-hidden="true"></canvas>
+  <a class="skip-link" href="#main">Skip to content</a>
+  <header class="masthead">
+    <div class="masthead-inner">
+      <a class="brand" href="#overview" aria-label="Matrix Swarm control">
+        <span class="brand-icon" data-icon="swarm"></span>
+        <strong>Matrix<span> Swarm</span></strong>
+      </a>
+      <nav id="navigation" class="nav" aria-label="Workspace navigation"></nav>
+      <div class="masthead-actions">
+        <div id="sidebar-status"></div>
+        <button class="button" data-action="open-chat"><span data-icon="spark"></span> Chat</button>
+        <button class="button primary" data-action="new-run"><span data-icon="plus"></span> New run</button>
+      </div>
+    </div>
+  </header>
+  <main id="main" tabindex="-1" class="main"></main>
+  <dialog id="run-dialog" class="dialog" aria-labelledby="dialog-title"></dialog>
+  <dialog id="chat-dialog" class="dialog chat-dialog" aria-labelledby="chat-title">
+    <header class="dialog-head">
+      <div><h2 id="chat-title">Matrix chat</h2><p>Ask about a run, request checks, or draft a coding task.</p></div>
+      <form method="dialog"><button class="button" aria-label="Close chat">Close</button></form>
+    </header>
+    <div class="dialog-body chat-body">
+      <label class="field">Repository<select id="chat-repo" class="control"></select></label>
+      <div class="chat-history" role="log" aria-label="Conversation"></div>
+      <p class="chat-status" role="status"></p>
+      <form id="chat-form" class="chat-compose">
+        <textarea class="control" name="message" rows="2" maxlength="4000" required aria-label="Message" placeholder="Test this repository"></textarea>
+        <button class="button primary" type="submit">Send</button>
+      </form>
+    </div>
+  </dialog>
+  <div id="toasts" class="toasts" aria-live="polite"></div>
+</body>
+</html>
